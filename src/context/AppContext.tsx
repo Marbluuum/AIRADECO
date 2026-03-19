@@ -1,45 +1,31 @@
-import { createContext, useContext, useReducer, useEffect, type ReactNode } from 'react';
+import { createContext, useContext, useReducer, useEffect, useState, type ReactNode } from 'react';
+import {
+  collection, getDocs, addDoc, updateDoc, deleteDoc,
+  doc, query, orderBy, writeBatch,
+} from 'firebase/firestore';
+import { firestore } from '../lib/firebase';
 import type { AppStore, Client, Product, Order, ShippingZone, Expense } from '../types';
 
-// ─── Default data ─────────────────────────────────────────────────────────────
+// ─── Default data (se inserta solo si Firestore está vacío) ───────────────────
 
-const DEFAULT_ZONES: ShippingZone[] = [
-  { id: 'z1', name: 'Local (mismo barrio)', price: 0,    description: 'Entrega sin costo' },
-  { id: 'z2', name: 'CABA / GBA Zona 1',   price: 2500,  description: 'Capital y zona norte/sur cercana' },
-  { id: 'z3', name: 'GBA Zona 2',          price: 4500,  description: 'Gran Buenos Aires lejano' },
-  { id: 'z4', name: 'Interior del país',   price: 8000,  description: 'Envío por transporte/flota' },
+const DEFAULT_ZONES: Omit<ShippingZone, 'id'>[] = [
+  { name: 'Local (mismo barrio)', price: 0,    description: 'Entrega sin costo' },
+  { name: 'CABA / GBA Zona 1',   price: 2500,  description: 'Capital y zona norte/sur cercana' },
+  { name: 'GBA Zona 2',          price: 4500,  description: 'Gran Buenos Aires lejano' },
+  { name: 'Interior del país',   price: 8000,  description: 'Envío por transporte/flota' },
 ];
 
-const now = new Date().toISOString();
-const DEFAULT_PRODUCTS: Product[] = [
-  { id: 'p1', name: 'Sillón esquinero',      category: 'Sillones',  costPrice: 85000,  salePrice: 130000, stock: 3, description: '', updatedAt: now },
-  { id: 'p2', name: 'Mesa ratona vidrio',    category: 'Mesas',     costPrice: 42000,  salePrice: 68000,  stock: 5, description: '', updatedAt: now },
-  { id: 'p3', name: 'Cama sommier 2 plazas', category: 'Camas',     costPrice: 120000, salePrice: 185000, stock: 2, description: '', updatedAt: now },
-  { id: 'p4', name: 'Comedor 6 sillas',      category: 'Comedores', costPrice: 165000, salePrice: 250000, stock: 1, description: '', updatedAt: now },
+const DEFAULT_PRODUCTS: Omit<Product, 'id' | 'updatedAt'>[] = [
+  { name: 'Sillón esquinero',      category: 'Sillones',  costPrice: 85000,  salePrice: 130000, stock: 3, description: '' },
+  { name: 'Mesa ratona vidrio',    category: 'Mesas',     costPrice: 42000,  salePrice: 68000,  stock: 5, description: '' },
+  { name: 'Cama sommier 2 plazas', category: 'Camas',     costPrice: 120000, salePrice: 185000, stock: 2, description: '' },
+  { name: 'Comedor 6 sillas',      category: 'Comedores', costPrice: 165000, salePrice: 250000, stock: 1, description: '' },
 ];
-
-const INITIAL: AppStore = {
-  clients: [],
-  products: DEFAULT_PRODUCTS,
-  orders: [],
-  shippingZones: DEFAULT_ZONES,
-  expenses: [],
-};
-
-const STORAGE_KEY = 'airadeco_data';
-
-function loadState(): AppStore {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    return saved ? JSON.parse(saved) : INITIAL;
-  } catch {
-    return INITIAL;
-  }
-}
 
 // ─── Reducer ──────────────────────────────────────────────────────────────────
 
 type Action =
+  | { type: 'SET_ALL'; payload: AppStore }
   | { type: 'ADD_CLIENT'; payload: Client }
   | { type: 'UPDATE_CLIENT'; payload: Client }
   | { type: 'DELETE_CLIENT'; payload: string }
@@ -57,8 +43,11 @@ type Action =
   | { type: 'UPDATE_EXPENSE'; payload: Expense }
   | { type: 'DELETE_EXPENSE'; payload: string };
 
+const EMPTY: AppStore = { clients: [], products: [], orders: [], shippingZones: [], expenses: [] };
+
 function reducer(state: AppStore, action: Action): AppStore {
   switch (action.type) {
+    case 'SET_ALL':              return action.payload;
     case 'ADD_CLIENT':           return { ...state, clients: [action.payload, ...state.clients] };
     case 'UPDATE_CLIENT':        return { ...state, clients: state.clients.map(c => c.id === action.payload.id ? action.payload : c) };
     case 'DELETE_CLIENT':        return { ...state, clients: state.clients.filter(c => c.id !== action.payload) };
@@ -79,123 +68,206 @@ function reducer(state: AppStore, action: Action): AppStore {
   }
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Firestore helpers ────────────────────────────────────────────────────────
 
-function uid() {
+function col(name: string) { return collection(firestore, name); }
+function ref(colName: string, id: string) { return doc(firestore, colName, id); }
+
+async function loadCol<T>(colName: string, order: string): Promise<T[]> {
+  try {
+    const snap = await getDocs(query(col(colName), orderBy(order, 'desc')));
+    return snap.docs.map(d => ({ id: d.id, ...d.data() } as T));
+  } catch {
+    const snap = await getDocs(col(colName));
+    return snap.docs.map(d => ({ id: d.id, ...d.data() } as T));
+  }
+}
+
+function uid(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
 
-function nextOrderNumber(orders: Order[]): string {
-  return `AD-${String(orders.length + 1).padStart(4, '0')}`;
-}
-
-// ─── Actions interface ────────────────────────────────────────────────────────
+// ─── Actions ──────────────────────────────────────────────────────────────────
 
 export interface AppActions {
-  addClient:          (data: Omit<Client, 'id' | 'createdAt'>) => void;
-  updateClient:       (client: Client) => void;
-  deleteClient:       (id: string) => void;
-  addProduct:         (data: Omit<Product, 'id' | 'updatedAt'>) => void;
-  updateProduct:      (product: Product) => void;
-  deleteProduct:      (id: string) => void;
-  importProducts:     (products: Omit<Product, 'id' | 'updatedAt'>[]) => void;
-  addOrder:           (data: Omit<Order, 'id' | 'orderNumber' | 'createdAt' | 'updatedAt'>) => void;
-  updateOrder:        (order: Order) => void;
-  deleteOrder:        (id: string) => void;
-  addShippingZone:    (data: Omit<ShippingZone, 'id'>) => void;
-  updateShippingZone: (zone: ShippingZone) => void;
-  deleteShippingZone: (id: string) => void;
-  addExpense:         (data: Omit<Expense, 'id' | 'createdAt'>) => void;
-  updateExpense:      (expense: Expense) => void;
-  deleteExpense:      (id: string) => void;
+  addClient:          (data: Omit<Client, 'id' | 'createdAt'>) => Promise<void>;
+  updateClient:       (client: Client) => Promise<void>;
+  deleteClient:       (id: string) => Promise<void>;
+  addProduct:         (data: Omit<Product, 'id' | 'updatedAt'>) => Promise<void>;
+  updateProduct:      (product: Product) => Promise<void>;
+  deleteProduct:      (id: string) => Promise<void>;
+  importProducts:     (products: Omit<Product, 'id' | 'updatedAt'>[]) => Promise<void>;
+  addOrder:           (data: Omit<Order, 'id' | 'orderNumber' | 'createdAt' | 'updatedAt'>) => Promise<void>;
+  updateOrder:        (order: Order) => Promise<void>;
+  deleteOrder:        (id: string) => Promise<void>;
+  addShippingZone:    (data: Omit<ShippingZone, 'id'>) => Promise<void>;
+  updateShippingZone: (zone: ShippingZone) => Promise<void>;
+  deleteShippingZone: (id: string) => Promise<void>;
+  addExpense:         (data: Omit<Expense, 'id' | 'createdAt'>) => Promise<void>;
+  updateExpense:      (expense: Expense) => Promise<void>;
+  deleteExpense:      (id: string) => Promise<void>;
 }
 
 // ─── Context ──────────────────────────────────────────────────────────────────
 
-interface AppContextValue {
-  state: AppStore;
-  loading: false;
-  db: AppActions;
-}
-
+interface AppContextValue { state: AppStore; loading: boolean; db: AppActions }
 const AppContext = createContext<AppContextValue | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(reducer, undefined, loadState);
+  const [state, dispatch] = useReducer(reducer, EMPTY);
+  const [loading, setLoading] = useState(true);
 
-  // Persistir en localStorage en cada cambio
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  }, [state]);
+  useEffect(() => { loadAll(); }, []);
+
+  async function loadAll() {
+    try {
+      const [clients, products, orders, shippingZones, expenses] = await Promise.all([
+        loadCol<Client>('clients', 'createdAt'),
+        loadCol<Product>('products', 'updatedAt'),
+        loadCol<Order>('orders', 'createdAt'),
+        loadCol<ShippingZone>('shippingZones', 'name'),
+        loadCol<Expense>('expenses', 'date'),
+      ]);
+
+      let finalZones    = shippingZones;
+      let finalProducts = products;
+
+      if (shippingZones.length === 0) finalZones    = await seedZones();
+      if (products.length === 0)      finalProducts = await seedProducts();
+
+      dispatch({ type: 'SET_ALL', payload: { clients, products: finalProducts, orders, shippingZones: finalZones, expenses } });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function seedZones(): Promise<ShippingZone[]> {
+    const result: ShippingZone[] = [];
+    for (const z of DEFAULT_ZONES) {
+      const r = await addDoc(col('shippingZones'), z);
+      result.push({ id: r.id, ...z });
+    }
+    return result;
+  }
+
+  async function seedProducts(): Promise<Product[]> {
+    const now = new Date().toISOString();
+    const result: Product[] = [];
+    for (const p of DEFAULT_PRODUCTS) {
+      const data = { ...p, updatedAt: now };
+      const r    = await addDoc(col('products'), data);
+      result.push({ id: r.id, ...data });
+    }
+    return result;
+  }
+
+  function nextOrderNumber(): string {
+    return `AD-${String(state.orders.length + 1).padStart(4, '0')}`;
+  }
 
   const db: AppActions = {
-    addClient(data) {
-      dispatch({ type: 'ADD_CLIENT', payload: { id: uid(), createdAt: new Date().toISOString(), ...data } });
+    // Clients
+    async addClient(data) {
+      const now  = new Date().toISOString();
+      const full = { ...data, createdAt: now };
+      const r    = await addDoc(col('clients'), full);
+      dispatch({ type: 'ADD_CLIENT', payload: { id: r.id, ...full } });
     },
-    updateClient(client) {
+    async updateClient(client) {
+      const { id, ...data } = client;
+      await updateDoc(ref('clients', id), data);
       dispatch({ type: 'UPDATE_CLIENT', payload: client });
     },
-    deleteClient(id) {
+    async deleteClient(id) {
+      await deleteDoc(ref('clients', id));
       dispatch({ type: 'DELETE_CLIENT', payload: id });
     },
 
-    addProduct(data) {
-      dispatch({ type: 'ADD_PRODUCT', payload: { id: uid(), updatedAt: new Date().toISOString(), ...data } });
+    // Products
+    async addProduct(data) {
+      const full = { ...data, updatedAt: new Date().toISOString() };
+      const r    = await addDoc(col('products'), full);
+      dispatch({ type: 'ADD_PRODUCT', payload: { id: r.id, ...full } });
     },
-    updateProduct(product) {
-      dispatch({ type: 'UPDATE_PRODUCT', payload: { ...product, updatedAt: new Date().toISOString() } });
+    async updateProduct(product) {
+      const updated = { ...product, updatedAt: new Date().toISOString() };
+      const { id, ...data } = updated;
+      await updateDoc(ref('products', id), data);
+      dispatch({ type: 'UPDATE_PRODUCT', payload: updated });
     },
-    deleteProduct(id) {
+    async deleteProduct(id) {
+      await deleteDoc(ref('products', id));
       dispatch({ type: 'DELETE_PRODUCT', payload: id });
     },
-    importProducts(products) {
+    async importProducts(products) {
+      const snap  = await getDocs(col('products'));
+      const batch = writeBatch(firestore);
+      snap.docs.forEach(d => batch.delete(d.ref));
+      await batch.commit();
+
       const now = new Date().toISOString();
-      dispatch({ type: 'SET_PRODUCTS', payload: products.map(p => ({ id: uid(), updatedAt: now, ...p })) });
+      const inserted: Product[] = [];
+      for (const p of products) {
+        const full = { ...p, updatedAt: now };
+        const r    = await addDoc(col('products'), full);
+        inserted.push({ id: r.id, ...full });
+      }
+      dispatch({ type: 'SET_PRODUCTS', payload: inserted });
     },
 
-    addOrder(data) {
-      const now = new Date().toISOString();
-      dispatch({
-        type: 'ADD_ORDER',
-        payload: {
-          id: uid(),
-          orderNumber: nextOrderNumber(state.orders),
-          createdAt: now,
-          updatedAt: now,
-          ...data,
-        },
-      });
+    // Orders
+    async addOrder(data) {
+      const now  = new Date().toISOString();
+      const full = { ...data, orderNumber: nextOrderNumber(), createdAt: now, updatedAt: now };
+      const r    = await addDoc(col('orders'), full);
+      dispatch({ type: 'ADD_ORDER', payload: { id: r.id, ...full } });
     },
-    updateOrder(order) {
-      dispatch({ type: 'UPDATE_ORDER', payload: { ...order, updatedAt: new Date().toISOString() } });
+    async updateOrder(order) {
+      const updated = { ...order, updatedAt: new Date().toISOString() };
+      const { id, ...data } = updated;
+      await updateDoc(ref('orders', id), data);
+      dispatch({ type: 'UPDATE_ORDER', payload: updated });
     },
-    deleteOrder(id) {
+    async deleteOrder(id) {
+      await deleteDoc(ref('orders', id));
       dispatch({ type: 'DELETE_ORDER', payload: id });
     },
 
-    addShippingZone(data) {
-      dispatch({ type: 'ADD_SHIPPING_ZONE', payload: { id: uid(), ...data } });
+    // Shipping zones
+    async addShippingZone(data) {
+      const r = await addDoc(col('shippingZones'), data);
+      dispatch({ type: 'ADD_SHIPPING_ZONE', payload: { id: r.id, ...data } });
     },
-    updateShippingZone(zone) {
+    async updateShippingZone(zone) {
+      const { id, ...data } = zone;
+      await updateDoc(ref('shippingZones', id), data);
       dispatch({ type: 'UPDATE_SHIPPING_ZONE', payload: zone });
     },
-    deleteShippingZone(id) {
+    async deleteShippingZone(id) {
+      await deleteDoc(ref('shippingZones', id));
       dispatch({ type: 'DELETE_SHIPPING_ZONE', payload: id });
     },
 
-    addExpense(data) {
-      dispatch({ type: 'ADD_EXPENSE', payload: { id: uid(), createdAt: new Date().toISOString(), ...data } });
+    // Expenses
+    async addExpense(data) {
+      const now  = new Date().toISOString();
+      const full = { ...data, createdAt: now };
+      const r    = await addDoc(col('expenses'), full);
+      dispatch({ type: 'ADD_EXPENSE', payload: { id: r.id, ...full } });
     },
-    updateExpense(expense) {
+    async updateExpense(expense) {
+      const { id, ...data } = expense;
+      await updateDoc(ref('expenses', id), data);
       dispatch({ type: 'UPDATE_EXPENSE', payload: expense });
     },
-    deleteExpense(id) {
+    async deleteExpense(id) {
+      await deleteDoc(ref('expenses', id));
       dispatch({ type: 'DELETE_EXPENSE', payload: id });
     },
   };
 
   return (
-    <AppContext.Provider value={{ state, loading: false, db }}>
+    <AppContext.Provider value={{ state, loading, db }}>
       {children}
     </AppContext.Provider>
   );
