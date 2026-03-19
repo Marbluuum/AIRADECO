@@ -15,19 +15,20 @@ const emptyForm = (): Omit<Product, 'id' | 'updatedAt'> => ({
 });
 
 export default function Products() {
-  const { state, dispatch } = useApp();
-  const [search, setSearch] = useState('');
+  const { state, db, loading } = useApp();
+  const [search, setSearch]       = useState('');
   const [filterCat, setFilterCat] = useState<string>('todos');
   const [modalOpen, setModalOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [editing, setEditing] = useState<Product | null>(null);
-  const [selected, setSelected] = useState<Product | null>(null);
-  const [form, setForm] = useState(emptyForm());
+  const [editing, setEditing]     = useState<Product | null>(null);
+  const [selected, setSelected]   = useState<Product | null>(null);
+  const [form, setForm]           = useState(emptyForm());
   const [sheetsUrl, setSheetsUrl] = useState(localStorage.getItem('airadeco_sheets_url') || '');
   const [sheetsOpen, setSheetsOpen] = useState(false);
-  const [syncing, setSyncing] = useState(false);
-  const [syncMsg, setSyncMsg] = useState('');
+  const [syncing, setSyncing]     = useState(false);
+  const [syncMsg, setSyncMsg]     = useState('');
+  const [saving, setSaving]       = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const categories = useMemo(() => {
@@ -62,14 +63,19 @@ export default function Products() {
     setModalOpen(true);
   }
 
-  function handleSave() {
+  async function handleSave() {
     if (!form.name.trim()) return;
-    if (editing) {
-      dispatch({ type: 'UPDATE_PRODUCT', payload: { ...editing, ...form } });
-    } else {
-      dispatch({ type: 'ADD_PRODUCT', payload: form });
+    setSaving(true);
+    try {
+      if (editing) {
+        await db.updateProduct({ ...editing, ...form });
+      } else {
+        await db.addProduct(form);
+      }
+      setModalOpen(false);
+    } finally {
+      setSaving(false);
     }
-    setModalOpen(false);
   }
 
   function exportCSV() {
@@ -84,7 +90,6 @@ export default function Products() {
     URL.revokeObjectURL(url);
   }
 
-  // Import CSV from Google Sheets (published CSV URL)
   async function syncFromSheets() {
     if (!sheetsUrl) return;
     setSyncing(true);
@@ -95,21 +100,18 @@ export default function Products() {
       const text = await res.text();
       const lines = text.trim().split('\n');
       if (lines.length < 2) throw new Error('El archivo está vacío');
-      // Expected columns: Nombre, Categoría, Costo, Venta, Stock, Descripción
-      const products: Product[] = lines.slice(1).map((line, i) => {
+      const products = lines.slice(1).map((line) => {
         const cols = line.split(',').map(c => c.replace(/^"|"$/g, '').trim());
         return {
-          id: `sheet_${i}`,
           name: cols[0] || '',
           category: cols[1] || 'Otro',
           costPrice: parseFloat(cols[2]) || 0,
           salePrice: parseFloat(cols[3]) || 0,
           stock: parseInt(cols[4]) || 0,
           description: cols[5] || '',
-          updatedAt: new Date().toISOString(),
         };
       }).filter(p => p.name);
-      dispatch({ type: 'IMPORT_PRODUCTS', payload: products });
+      await db.importProducts(products);
       setSyncMsg(`✓ ${products.length} productos importados`);
       localStorage.setItem('airadeco_sheets_url', sheetsUrl);
     } catch (e: any) {
@@ -118,32 +120,37 @@ export default function Products() {
     setSyncing(false);
   }
 
-  // Import from local CSV file
   function handleFileImport(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = async (ev) => {
       const text = ev.target?.result as string;
       const lines = text.trim().split('\n');
-      const products: Product[] = lines.slice(1).map((line, i) => {
+      const products = lines.slice(1).map((line) => {
         const cols = line.split(',').map(c => c.replace(/^"|"$/g, '').trim());
         return {
-          id: `import_${i}_${Date.now()}`,
           name: cols[0] || '',
           category: cols[1] || 'Otro',
           costPrice: parseFloat(cols[2]) || 0,
           salePrice: parseFloat(cols[3]) || 0,
           stock: parseInt(cols[4]) || 0,
           description: cols[5] || '',
-          updatedAt: new Date().toISOString(),
         };
       }).filter(p => p.name);
-      dispatch({ type: 'IMPORT_PRODUCTS', payload: products });
+      await db.importProducts(products);
       setSyncMsg(`✓ ${products.length} productos importados desde archivo`);
     };
     reader.readAsText(file, 'UTF-8');
     e.target.value = '';
+  }
+
+  if (loading) {
+    return (
+      <div className="flex flex-col min-h-screen pb-nav items-center justify-center">
+        <div className="w-8 h-8 border-4 border-gold-400 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
   }
 
   return (
@@ -169,7 +176,6 @@ export default function Products() {
           <input className="input pl-9" placeholder="Buscar producto…" value={search} onChange={e => setSearch(e.target.value)} />
         </div>
 
-        {/* Category chips */}
         <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1">
           {categories.map(cat => (
             <button
@@ -259,8 +265,8 @@ export default function Products() {
             <label className="label">Descripción</label>
             <textarea className="input resize-none" rows={2} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
           </div>
-          <button className="btn-primary w-full" onClick={handleSave} disabled={!form.name.trim()}>
-            {editing ? 'Guardar cambios' : 'Agregar producto'}
+          <button className="btn-primary w-full" onClick={handleSave} disabled={!form.name.trim() || saving}>
+            {saving ? 'Guardando…' : editing ? 'Guardar cambios' : 'Agregar producto'}
           </button>
         </div>
       </Modal>
@@ -328,11 +334,7 @@ export default function Products() {
               onChange={e => setSheetsUrl(e.target.value)}
             />
           </div>
-          <button
-            className="btn-primary w-full"
-            disabled={!sheetsUrl || syncing}
-            onClick={syncFromSheets}
-          >
+          <button className="btn-primary w-full" disabled={!sheetsUrl || syncing} onClick={syncFromSheets}>
             {syncing ? 'Sincronizando…' : 'Sincronizar desde Sheets'}
           </button>
           <div className="relative flex items-center">
@@ -360,8 +362,8 @@ export default function Products() {
       <ConfirmDialog
         open={deleteOpen}
         onClose={() => setDeleteOpen(false)}
-        onConfirm={() => {
-          if (selected) dispatch({ type: 'DELETE_PRODUCT', payload: selected.id });
+        onConfirm={async () => {
+          if (selected) await db.deleteProduct(selected.id);
           setDetailOpen(false);
           setSelected(null);
         }}

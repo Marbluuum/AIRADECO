@@ -1,4 +1,4 @@
-export type Seller = 'Yanil Giselle' | 'Taiel';
+export type Seller = string; // Nombre del vendedor (viene del perfil de usuario)
 
 export type OrderStatus =
   | 'pendiente'

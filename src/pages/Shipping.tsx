@@ -11,12 +11,13 @@ import { Truck, Plus, Pencil, Trash2, MapPin } from 'lucide-react';
 const emptyForm = (): Omit<ShippingZone, 'id'> => ({ name: '', price: 0, description: '' });
 
 export default function Shipping() {
-  const { state, dispatch } = useApp();
+  const { state, db, loading } = useApp();
   const [modalOpen, setModalOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [editing, setEditing] = useState<ShippingZone | null>(null);
+  const [editing, setEditing]   = useState<ShippingZone | null>(null);
   const [toDelete, setToDelete] = useState<ShippingZone | null>(null);
-  const [form, setForm] = useState(emptyForm());
+  const [form, setForm]         = useState(emptyForm());
+  const [saving, setSaving]     = useState(false);
 
   function openNew() {
     setEditing(null);
@@ -30,17 +31,30 @@ export default function Shipping() {
     setModalOpen(true);
   }
 
-  function handleSave() {
+  async function handleSave() {
     if (!form.name.trim()) return;
-    if (editing) {
-      dispatch({ type: 'UPDATE_SHIPPING_ZONE', payload: { ...editing, ...form } });
-    } else {
-      dispatch({ type: 'ADD_SHIPPING_ZONE', payload: form });
+    setSaving(true);
+    try {
+      if (editing) {
+        await db.updateShippingZone({ ...editing, ...form });
+      } else {
+        await db.addShippingZone(form);
+      }
+      setModalOpen(false);
+    } finally {
+      setSaving(false);
     }
-    setModalOpen(false);
   }
 
   const zones = [...state.shippingZones].sort((a, b) => a.price - b.price);
+
+  if (loading) {
+    return (
+      <div className="flex flex-col min-h-screen pb-nav items-center justify-center">
+        <div className="w-8 h-8 border-4 border-gold-400 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col min-h-screen pb-nav">
@@ -55,7 +69,6 @@ export default function Shipping() {
       />
 
       <div className="px-4 py-4 space-y-3">
-        {/* Info card */}
         <div className="bg-gold-50 border border-gold-200 rounded-2xl p-4">
           <div className="flex items-start gap-3">
             <MapPin size={18} className="text-gold-600 mt-0.5 flex-shrink-0" />
@@ -93,16 +106,10 @@ export default function Shipping() {
                   </p>
                 </div>
                 <div className="flex items-center gap-1">
-                  <button
-                    className="p-2 rounded-lg hover:bg-cream-100 transition-colors"
-                    onClick={() => openEdit(zone)}
-                  >
+                  <button className="p-2 rounded-lg hover:bg-cream-100 transition-colors" onClick={() => openEdit(zone)}>
                     <Pencil size={15} className="text-gray-400" />
                   </button>
-                  <button
-                    className="p-2 rounded-lg hover:bg-red-50 transition-colors"
-                    onClick={() => { setToDelete(zone); setDeleteOpen(true); }}
-                  >
+                  <button className="p-2 rounded-lg hover:bg-red-50 transition-colors" onClick={() => { setToDelete(zone); setDeleteOpen(true); }}>
                     <Trash2 size={15} className="text-red-400" />
                   </button>
                 </div>
@@ -111,7 +118,6 @@ export default function Shipping() {
           </div>
         )}
 
-        {/* Usage stats */}
         {zones.length > 0 && (
           <div className="card">
             <p className="section-title mb-3">Uso de zonas en pedidos</p>
@@ -139,34 +145,19 @@ export default function Shipping() {
         <div className="space-y-4">
           <div>
             <label className="label">Nombre de la zona *</label>
-            <input
-              className="input"
-              value={form.name}
-              onChange={e => setForm({ ...form, name: e.target.value })}
-              placeholder="Ej: CABA / GBA Zona 1"
-            />
+            <input className="input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="Ej: CABA / GBA Zona 1" />
           </div>
           <div>
             <label className="label">Precio de envío $</label>
-            <input
-              type="number" min={0} className="input"
-              value={form.price}
-              onChange={e => setForm({ ...form, price: Number(e.target.value) })}
-              placeholder="0 = envío gratis"
-            />
+            <input type="number" min={0} className="input" value={form.price} onChange={e => setForm({ ...form, price: Number(e.target.value) })} placeholder="0 = envío gratis" />
             {form.price === 0 && <p className="text-xs text-green-600 mt-1">Este envío será gratis</p>}
           </div>
           <div>
             <label className="label">Descripción</label>
-            <textarea
-              className="input resize-none" rows={2}
-              value={form.description}
-              onChange={e => setForm({ ...form, description: e.target.value })}
-              placeholder="Descripción de la zona de cobertura…"
-            />
+            <textarea className="input resize-none" rows={2} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="Descripción de la zona de cobertura…" />
           </div>
-          <button className="btn-primary w-full" onClick={handleSave} disabled={!form.name.trim()}>
-            {editing ? 'Guardar cambios' : 'Agregar zona'}
+          <button className="btn-primary w-full" onClick={handleSave} disabled={!form.name.trim() || saving}>
+            {saving ? 'Guardando…' : editing ? 'Guardar cambios' : 'Agregar zona'}
           </button>
         </div>
       </Modal>
@@ -174,8 +165,8 @@ export default function Shipping() {
       <ConfirmDialog
         open={deleteOpen}
         onClose={() => setDeleteOpen(false)}
-        onConfirm={() => {
-          if (toDelete) dispatch({ type: 'DELETE_SHIPPING_ZONE', payload: toDelete.id });
+        onConfirm={async () => {
+          if (toDelete) await db.deleteShippingZone(toDelete.id);
           setToDelete(null);
         }}
         title="Eliminar zona"

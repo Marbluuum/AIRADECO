@@ -1,26 +1,25 @@
 import { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
+import { useAuth } from '../context/AuthContext';
 import Header from '../components/layout/Header';
 import Modal from '../components/ui/Modal';
 import ConfirmDialog from '../components/ui/ConfirmDialog';
 import EmptyState from '../components/ui/EmptyState';
 import { OrderStatusBadge, PaymentStatusBadge } from '../components/ui/StatusBadge';
-import type { Order, OrderItem, OrderStatus, SaleChannel, Seller, PaymentStatus } from '../types';
+import type { Order, OrderItem, OrderStatus, SaleChannel, PaymentStatus } from '../types';
 import { formatCurrency, formatDate } from '../utils/format';
 import {
-  ShoppingBag, Plus, Search, Filter, Pencil, Trash2,
-  X
+  ShoppingBag, Plus, Search, Filter, Pencil, Trash2, X
 } from 'lucide-react';
 
 const CHANNELS: SaleChannel[] = ['Instagram', 'Facebook', 'WhatsApp', 'Mercado Libre', 'Tienda Online', 'Presencial', 'Otro'];
-const SELLERS: Seller[] = ['Yanil Giselle', 'Taiel'];
 const STATUSES: { value: OrderStatus; label: string }[] = [
-  { value: 'pendiente', label: 'Pendiente' },
-  { value: 'en_proceso', label: 'En proceso' },
+  { value: 'pendiente',        label: 'Pendiente' },
+  { value: 'en_proceso',       label: 'En proceso' },
   { value: 'listo_para_envio', label: 'Listo p/ envío' },
-  { value: 'enviado', label: 'Enviado' },
-  { value: 'entregado', label: 'Entregado' },
-  { value: 'cancelado', label: 'Cancelado' },
+  { value: 'enviado',          label: 'Enviado' },
+  { value: 'entregado',        label: 'Entregado' },
+  { value: 'cancelado',        label: 'Cancelado' },
 ];
 
 type Step = 'client' | 'items' | 'shipping' | 'payment';
@@ -28,7 +27,7 @@ type Step = 'client' | 'items' | 'shipping' | 'payment';
 interface FormState {
   clientId: string;
   clientName: string;
-  seller: Seller;
+  seller: string;
   channel: SaleChannel;
   items: OrderItem[];
   shippingZoneId: string;
@@ -40,28 +39,39 @@ interface FormState {
   paymentStatus: PaymentStatus;
 }
 
-function emptyForm(): FormState {
-  return {
-    clientId: '', clientName: '', seller: 'Yanil Giselle', channel: 'WhatsApp',
-    items: [], shippingZoneId: '', shippingZoneName: 'Sin envío', shippingCost: 0,
-    notes: '', status: 'pendiente', amountPaid: 0, paymentStatus: 'pendiente',
-  };
-}
-
 export default function Orders() {
-  const { state, dispatch } = useApp();
-  const [search, setSearch] = useState('');
+  const { state, db, loading } = useApp();
+  const { profile } = useAuth();
+
+  function emptyForm(): FormState {
+    return {
+      clientId: '', clientName: '', seller: profile?.name ?? '',
+      channel: 'WhatsApp', items: [],
+      shippingZoneId: '', shippingZoneName: 'Sin envío', shippingCost: 0,
+      notes: '', status: 'pendiente', amountPaid: 0, paymentStatus: 'pendiente',
+    };
+  }
+
+  const [search, setSearch]             = useState('');
   const [filterStatus, setFilterStatus] = useState<OrderStatus | 'todos'>('todos');
-  const [filterSeller, setFilterSeller] = useState<Seller | 'todos'>('todos');
-  const [showFilters, setShowFilters] = useState(false);
-  const [modalOpen, setModalOpen] = useState(false);
-  const [step, setStep] = useState<Step>('client');
-  const [detailOpen, setDetailOpen] = useState(false);
-  const [deleteOpen, setDeleteOpen] = useState(false);
-  const [editing, setEditing] = useState<Order | null>(null);
-  const [selected, setSelected] = useState<Order | null>(null);
-  const [form, setForm] = useState<FormState>(emptyForm());
+  const [filterSeller, setFilterSeller] = useState<string>('todos');
+  const [showFilters, setShowFilters]   = useState(false);
+  const [modalOpen, setModalOpen]       = useState(false);
+  const [step, setStep]                 = useState<Step>('client');
+  const [detailOpen, setDetailOpen]     = useState(false);
+  const [deleteOpen, setDeleteOpen]     = useState(false);
+  const [editing, setEditing]           = useState<Order | null>(null);
+  const [selected, setSelected]         = useState<Order | null>(null);
+  const [form, setForm]                 = useState<FormState>(emptyForm());
   const [newClientName, setNewClientName] = useState('');
+  const [saving, setSaving]             = useState(false);
+
+  // Unique sellers from orders (+ current user)
+  const knownSellers = useMemo(() => {
+    const set = new Set(state.orders.map(o => o.seller));
+    if (profile?.name) set.add(profile.name);
+    return Array.from(set).sort();
+  }, [state.orders, profile]);
 
   const filtered = useMemo(() => {
     let list = state.orders;
@@ -75,8 +85,8 @@ export default function Orders() {
     return list;
   }, [state.orders, search, filterStatus, filterSeller]);
 
-  const subtotal = form.items.reduce((s, i) => s + i.unitPrice * i.quantity, 0);
-  const total    = subtotal + form.shippingCost;
+  const subtotal  = form.items.reduce((s, i) => s + i.unitPrice * i.quantity, 0);
+  const total     = subtotal + form.shippingCost;
   const totalCost = form.items.reduce((s, i) => s + i.costPrice * i.quantity, 0) + form.shippingCost;
 
   function openNew() {
@@ -99,17 +109,20 @@ export default function Orders() {
     setModalOpen(true);
   }
 
-  function handleSave() {
-    const payload = {
-      ...form, subtotal, total, totalCost,
-      paymentStatus: form.amountPaid >= total ? 'pagado' : form.amountPaid > 0 ? 'parcial' : 'pendiente' as PaymentStatus,
-    };
-    if (editing) {
-      dispatch({ type: 'UPDATE_ORDER', payload: { ...editing, ...payload } });
-    } else {
-      dispatch({ type: 'ADD_ORDER', payload });
+  async function handleSave() {
+    setSaving(true);
+    try {
+      const ps: PaymentStatus = form.amountPaid >= total ? 'pagado' : form.amountPaid > 0 ? 'parcial' : 'pendiente';
+      const payload = { ...form, subtotal, total, totalCost, paymentStatus: ps };
+      if (editing) {
+        await db.updateOrder({ ...editing, ...payload });
+      } else {
+        await db.addOrder(payload);
+      }
+      setModalOpen(false);
+    } finally {
+      setSaving(false);
     }
-    setModalOpen(false);
   }
 
   function addItem(productId: string) {
@@ -151,10 +164,18 @@ export default function Orders() {
     if (c) setForm({ ...form, clientId: c.id, clientName: c.name });
   }
 
-  function addNewClient() {
+  async function addNewClient() {
     if (!newClientName.trim()) return;
-    dispatch({ type: 'ADD_CLIENT', payload: { name: newClientName.trim(), phone: '', email: '', address: '', city: '', province: '', notes: '' } });
+    await db.addClient({ name: newClientName.trim(), phone: '', email: '', address: '', city: '', province: '', notes: '' });
     setNewClientName('');
+  }
+
+  if (loading) {
+    return (
+      <div className="flex flex-col min-h-screen pb-nav items-center justify-center">
+        <div className="w-8 h-8 border-4 border-gold-400 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
   }
 
   return (
@@ -195,9 +216,9 @@ export default function Orders() {
             </div>
             <div>
               <label className="label">Vendedora</label>
-              <select className="select" value={filterSeller} onChange={e => setFilterSeller(e.target.value as any)}>
+              <select className="select" value={filterSeller} onChange={e => setFilterSeller(e.target.value)}>
                 <option value="todos">Todas</option>
-                {SELLERS.map(s => <option key={s} value={s}>{s.split(' ')[0]}</option>)}
+                {knownSellers.map(s => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
           </div>
@@ -227,7 +248,7 @@ export default function Orders() {
                 <div className="flex items-start justify-between gap-2 mb-2">
                   <div>
                     <p className="font-bold text-dark-800 text-sm">{o.orderNumber}</p>
-                    <p className="text-xs text-gray-500">{o.clientName} · {o.seller.split(' ')[0]}</p>
+                    <p className="text-xs text-gray-500">{o.clientName} · {o.seller}</p>
                   </div>
                   <div className="text-right flex-shrink-0">
                     <p className="font-bold text-dark-800">{formatCurrency(o.total)}</p>
@@ -280,19 +301,27 @@ export default function Orders() {
             </div>
             <div>
               <label className="label">Vendedora</label>
-              <div className="flex gap-2">
-                {SELLERS.map(s => (
-                  <button
-                    key={s}
-                    onClick={() => setForm({ ...form, seller: s })}
-                    className={`flex-1 py-2.5 rounded-xl text-sm font-medium transition-colors ${
-                      form.seller === s ? 'bg-dark-800 text-white' : 'bg-cream-100 text-dark-700'
-                    }`}
-                  >
-                    {s.split(' ')[0]}
-                  </button>
-                ))}
-              </div>
+              <input
+                className="input"
+                value={form.seller}
+                onChange={e => setForm({ ...form, seller: e.target.value })}
+                placeholder="Nombre de la vendedora"
+              />
+              {knownSellers.length > 0 && (
+                <div className="flex gap-2 mt-2 flex-wrap">
+                  {knownSellers.map(s => (
+                    <button
+                      key={s}
+                      onClick={() => setForm({ ...form, seller: s })}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-colors ${
+                        form.seller === s ? 'bg-dark-800 text-white' : 'bg-cream-100 text-dark-700'
+                      }`}
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             <div>
               <label className="label">Canal de venta</label>
@@ -492,8 +521,8 @@ export default function Orders() {
             </div>
             <div className="flex gap-3">
               <button className="btn-secondary flex-1" onClick={() => setStep('shipping')}>← Volver</button>
-              <button className="btn-primary flex-1" onClick={handleSave}>
-                {editing ? 'Guardar cambios' : 'Crear pedido'}
+              <button className="btn-primary flex-1" onClick={handleSave} disabled={saving}>
+                {saving ? 'Guardando…' : editing ? 'Guardar cambios' : 'Crear pedido'}
               </button>
             </div>
           </div>
@@ -504,14 +533,12 @@ export default function Orders() {
       {selected && (
         <Modal open={detailOpen} onClose={() => setDetailOpen(false)} title={selected.orderNumber}>
           <div className="space-y-4">
-            {/* Status row */}
             <div className="flex gap-2 flex-wrap">
               <OrderStatusBadge status={selected.status} />
               <PaymentStatusBadge status={selected.paymentStatus} />
               <span className="badge bg-cream-100 text-gray-500">{selected.channel}</span>
             </div>
 
-            {/* Info grid */}
             <div className="grid grid-cols-2 gap-3">
               <div className="bg-cream-50 p-3 rounded-xl">
                 <p className="text-xs text-gray-400 mb-0.5">Cliente</p>
@@ -519,7 +546,7 @@ export default function Orders() {
               </div>
               <div className="bg-cream-50 p-3 rounded-xl">
                 <p className="text-xs text-gray-400 mb-0.5">Vendedora</p>
-                <p className="text-sm font-semibold">{selected.seller.split(' ')[0]}</p>
+                <p className="text-sm font-semibold">{selected.seller}</p>
               </div>
               <div className="bg-cream-50 p-3 rounded-xl">
                 <p className="text-xs text-gray-400 mb-0.5">Fecha</p>
@@ -531,7 +558,6 @@ export default function Orders() {
               </div>
             </div>
 
-            {/* Items */}
             <div>
               <p className="label">Productos</p>
               <div className="space-y-1">
@@ -544,7 +570,6 @@ export default function Orders() {
               </div>
             </div>
 
-            {/* Totals */}
             <div className="bg-cream-50 rounded-xl p-3 space-y-1">
               <div className="flex justify-between text-sm">
                 <span className="text-gray-500">Subtotal</span>
@@ -570,7 +595,6 @@ export default function Orders() {
               )}
             </div>
 
-            {/* Profit */}
             <div className="bg-gold-50 border border-gold-200 rounded-xl p-3">
               <p className="text-xs text-gold-700 font-semibold mb-1">Rentabilidad del pedido</p>
               <div className="flex justify-between text-sm">
@@ -610,10 +634,12 @@ export default function Orders() {
       <ConfirmDialog
         open={deleteOpen}
         onClose={() => setDeleteOpen(false)}
-        onConfirm={() => {
-          if (selected) dispatch({ type: 'DELETE_ORDER', payload: selected.id });
-          setDetailOpen(false);
-          setSelected(null);
+        onConfirm={async () => {
+          if (selected) {
+            await db.deleteOrder(selected.id);
+            setDetailOpen(false);
+            setSelected(null);
+          }
         }}
         title="Eliminar pedido"
         message={`¿Eliminar el pedido ${selected?.orderNumber}?`}

@@ -13,14 +13,15 @@ const empty: Omit<Client, 'id' | 'createdAt'> = {
 };
 
 export default function Clients() {
-  const { state, dispatch } = useApp();
-  const [search, setSearch] = useState('');
+  const { state, db, loading } = useApp();
+  const [search, setSearch]       = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [editing, setEditing] = useState<Client | null>(null);
-  const [selected, setSelected] = useState<Client | null>(null);
-  const [form, setForm] = useState(empty);
+  const [editing, setEditing]     = useState<Client | null>(null);
+  const [selected, setSelected]   = useState<Client | null>(null);
+  const [form, setForm]           = useState(empty);
+  const [saving, setSaving]       = useState(false);
 
   const filtered = useMemo(() =>
     state.clients.filter(c =>
@@ -50,19 +51,24 @@ export default function Clients() {
     setDetailOpen(true);
   }
 
-  function handleSave() {
+  async function handleSave() {
     if (!form.name.trim()) return;
-    if (editing) {
-      dispatch({ type: 'UPDATE_CLIENT', payload: { ...editing, ...form } });
-    } else {
-      dispatch({ type: 'ADD_CLIENT', payload: form });
+    setSaving(true);
+    try {
+      if (editing) {
+        await db.updateClient({ ...editing, ...form });
+      } else {
+        await db.addClient(form);
+      }
+      setModalOpen(false);
+    } finally {
+      setSaving(false);
     }
-    setModalOpen(false);
   }
 
-  function handleDelete() {
+  async function handleDelete() {
     if (!selected) return;
-    dispatch({ type: 'DELETE_CLIENT', payload: selected.id });
+    await db.deleteClient(selected.id);
     setDetailOpen(false);
     setSelected(null);
   }
@@ -84,6 +90,14 @@ export default function Clients() {
     ? state.orders.filter(o => o.clientId === selected.id)
     : [];
 
+  if (loading) {
+    return (
+      <div className="flex flex-col min-h-screen pb-nav items-center justify-center">
+        <div className="w-8 h-8 border-4 border-gold-400 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col min-h-screen pb-nav">
       <Header
@@ -102,7 +116,6 @@ export default function Clients() {
       />
 
       <div className="px-4 py-4 space-y-3">
-        {/* Search */}
         <div className="relative">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
           <input
@@ -149,11 +162,7 @@ export default function Clients() {
       </div>
 
       {/* Form Modal */}
-      <Modal
-        open={modalOpen}
-        onClose={() => setModalOpen(false)}
-        title={editing ? 'Editar cliente' : 'Nuevo cliente'}
-      >
+      <Modal open={modalOpen} onClose={() => setModalOpen(false)} title={editing ? 'Editar cliente' : 'Nuevo cliente'}>
         <div className="space-y-4">
           <div>
             <label className="label">Nombre completo *</label>
@@ -187,8 +196,8 @@ export default function Clients() {
             <label className="label">Notas</label>
             <textarea className="input resize-none" rows={3} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="Observaciones del cliente…" />
           </div>
-          <button className="btn-primary w-full" onClick={handleSave} disabled={!form.name.trim()}>
-            {editing ? 'Guardar cambios' : 'Agregar cliente'}
+          <button className="btn-primary w-full" onClick={handleSave} disabled={!form.name.trim() || saving}>
+            {saving ? 'Guardando…' : editing ? 'Guardar cambios' : 'Agregar cliente'}
           </button>
         </div>
       </Modal>
@@ -197,7 +206,6 @@ export default function Clients() {
       {selected && (
         <Modal open={detailOpen} onClose={() => setDetailOpen(false)} title={selected.name}>
           <div className="space-y-4">
-            {/* Avatar + name */}
             <div className="flex items-center gap-4">
               <div className="w-16 h-16 rounded-full bg-gold-400 flex items-center justify-center flex-shrink-0">
                 <span className="text-white font-bold text-2xl">{selected.name.charAt(0).toUpperCase()}</span>
@@ -208,7 +216,6 @@ export default function Clients() {
               </div>
             </div>
 
-            {/* Info */}
             <div className="space-y-2">
               {selected.phone && (
                 <a href={`tel:${selected.phone}`} className="flex items-center gap-3 p-3 bg-cream-50 rounded-xl hover:bg-cream-100">
@@ -238,7 +245,6 @@ export default function Clients() {
               )}
             </div>
 
-            {/* Orders */}
             {clientOrders.length > 0 && (
               <div>
                 <p className="label">Pedidos ({clientOrders.length})</p>
@@ -263,7 +269,6 @@ export default function Clients() {
               </div>
             )}
 
-            {/* Actions */}
             <div className="flex gap-3 pt-2">
               <button className="btn-secondary flex-1 flex items-center justify-center gap-2" onClick={() => openEdit(selected)}>
                 <Pencil size={15} /> Editar
