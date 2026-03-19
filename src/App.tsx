@@ -11,20 +11,9 @@ import Finance from './pages/Finance';
 import Login from './pages/Login';
 
 function PrivateApp() {
-  const { user, isLoading } = useAuth();
+  const { profile } = useAuth();
 
-  if (isLoading) {
-    return (
-      <div className="min-h-screen bg-cream-100 flex items-center justify-center">
-        <div className="text-center">
-          <div className="w-10 h-10 border-4 border-gold-400 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-          <p className="text-gray-500 text-sm">Cargando…</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (!user) return <Navigate to="/login" replace />;
+  if (!profile) return <Navigate to="/login" replace />;
 
   return (
     <AppProvider>
@@ -58,9 +47,8 @@ function App() {
 }
 
 function LoginRoute() {
-  const { user, isLoading } = useAuth();
-  if (isLoading) return null;
-  if (user) return <Navigate to="/" replace />;
+  const { profile } = useAuth();
+  if (profile) return <Navigate to="/" replace />;
   return <Login />;
 }
 

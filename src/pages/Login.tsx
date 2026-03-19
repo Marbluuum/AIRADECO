@@ -4,18 +4,15 @@ import { Eye, EyeOff } from 'lucide-react';
 
 export default function Login() {
   const { signIn } = useAuth();
-  const [email, setEmail]       = useState('');
+  const [name, setName]         = useState('');
   const [password, setPassword] = useState('');
   const [showPass, setShowPass] = useState(false);
   const [error, setError]       = useState('');
-  const [loading, setLoading]   = useState(false);
 
-  async function handleSubmit(e: React.FormEvent) {
+  function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
-    setLoading(true);
-    const { error } = await signIn(email, password);
-    setLoading(false);
+    const { error } = signIn(name, password);
     if (error) setError(error);
   }
 
@@ -36,15 +33,15 @@ export default function Login() {
           <h2 className="text-lg font-semibold text-dark-800 mb-5">Iniciar sesión</h2>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="label">Email</label>
+              <label className="label">Nombre</label>
               <input
-                type="email"
+                type="text"
                 className="input"
-                placeholder="tu@email.com"
-                value={email}
-                onChange={e => setEmail(e.target.value)}
+                placeholder="Yanil / Giselle / Taiel"
+                value={name}
+                onChange={e => setName(e.target.value)}
                 required
-                autoComplete="email"
+                autoComplete="username"
               />
             </div>
             <div>
@@ -76,12 +73,8 @@ export default function Login() {
               </div>
             )}
 
-            <button
-              type="submit"
-              className="btn-primary w-full py-3 text-base"
-              disabled={loading}
-            >
-              {loading ? 'Ingresando…' : 'Ingresar'}
+            <button type="submit" className="btn-primary w-full py-3 text-base">
+              Ingresar
             </button>
           </form>
         </div>

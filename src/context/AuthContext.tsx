@@ -1,12 +1,4 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-import {
-  onAuthStateChanged,
-  signInWithEmailAndPassword,
-  signOut as firebaseSignOut,
-  type User,
-} from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { auth, firestore } from '../lib/firebase';
+import { createContext, useContext, useState, type ReactNode } from 'react';
 
 export interface UserProfile {
   id: string;
@@ -14,65 +6,53 @@ export interface UserProfile {
   role: string;
 }
 
+// ─── Vendedores ───────────────────────────────────────────────────────────────
+const USERS: (UserProfile & { password: string })[] = [
+  { id: '1', name: 'Yanil',   password: 'yanil123',   role: 'vendedor' },
+  { id: '2', name: 'Giselle', password: 'giselle123', role: 'vendedor' },
+  { id: '3', name: 'Taiel',   password: 'taiel123',   role: 'vendedor' },
+];
+
+const SESSION_KEY = 'airadeco_user';
+
+// ─── Context ──────────────────────────────────────────────────────────────────
 interface AuthContextValue {
-  user: User | null;
   profile: UserProfile | null;
-  isLoading: boolean;
-  signIn: (email: string, password: string) => Promise<{ error: string | null }>;
-  signOut: () => Promise<void>;
+  signIn: (name: string, password: string) => { error: string | null };
+  signOut: () => void;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser]       = useState<User | null>(null);
-  const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
-      setUser(firebaseUser);
-      if (firebaseUser) {
-        await loadOrCreateProfile(firebaseUser);
-      } else {
-        setProfile(null);
-        setIsLoading(false);
-      }
-    });
-    return unsub;
-  }, []);
-
-  async function loadOrCreateProfile(firebaseUser: User) {
-    const ref  = doc(firestore, 'users', firebaseUser.uid);
-    const snap = await getDoc(ref);
-
-    if (snap.exists()) {
-      setProfile({ id: firebaseUser.uid, ...(snap.data() as { name: string; role: string }) });
-    } else {
-      // Primera vez que inicia sesión — crear el perfil automáticamente
-      const name = firebaseUser.displayName ?? firebaseUser.email?.split('@')[0] ?? 'Vendedor';
-      const newProfile = { name, role: 'vendedor' };
-      await setDoc(ref, newProfile);
-      setProfile({ id: firebaseUser.uid, ...newProfile });
-    }
-    setIsLoading(false);
-  }
-
-  async function signIn(email: string, password: string): Promise<{ error: string | null }> {
+  const [profile, setProfile] = useState<UserProfile | null>(() => {
     try {
-      await signInWithEmailAndPassword(auth, email, password);
-      return { error: null };
+      const saved = localStorage.getItem(SESSION_KEY);
+      return saved ? JSON.parse(saved) : null;
     } catch {
-      return { error: 'Email o contraseña incorrectos' };
+      return null;
     }
+  });
+
+  function signIn(name: string, password: string): { error: string | null } {
+    const user = USERS.find(
+      u => u.name.toLowerCase() === name.trim().toLowerCase() && u.password === password,
+    );
+    if (!user) return { error: 'Usuario o contraseña incorrectos' };
+
+    const p: UserProfile = { id: user.id, name: user.name, role: user.role };
+    localStorage.setItem(SESSION_KEY, JSON.stringify(p));
+    setProfile(p);
+    return { error: null };
   }
 
-  async function signOut() {
-    await firebaseSignOut(auth);
+  function signOut() {
+    localStorage.removeItem(SESSION_KEY);
+    setProfile(null);
   }
 
   return (
-    <AuthContext.Provider value={{ user, profile, isLoading, signIn, signOut }}>
+    <AuthContext.Provider value={{ profile, signIn, signOut }}>
       {children}
     </AuthContext.Provider>
   );
