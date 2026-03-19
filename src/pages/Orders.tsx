@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
-import { useAuth } from '../context/AuthContext';
+import { useAuth, SELLERS } from '../context/AuthContext';
 import Header from '../components/layout/Header';
 import Modal from '../components/ui/Modal';
 import ConfirmDialog from '../components/ui/ConfirmDialog';
@@ -66,12 +66,12 @@ export default function Orders() {
   const [newClientName, setNewClientName] = useState('');
   const [saving, setSaving]             = useState(false);
 
-  // Unique sellers from orders (+ current user)
+  // Sellers: lista estática + cualquier nombre extra que venga de pedidos viejos
   const knownSellers = useMemo(() => {
-    const set = new Set(state.orders.map(o => o.seller));
-    if (profile?.name) set.add(profile.name);
+    const set = new Set<string>([...SELLERS]);
+    state.orders.forEach(o => { if (o.seller) set.add(o.seller); });
     return Array.from(set).sort();
-  }, [state.orders, profile]);
+  }, [state.orders]);
 
   const filtered = useMemo(() => {
     let list = state.orders;
@@ -166,7 +166,7 @@ export default function Orders() {
 
   async function addNewClient() {
     if (!newClientName.trim()) return;
-    await db.addClient({ name: newClientName.trim(), phone: '', email: '', address: '', city: '', province: '', notes: '' });
+    await db.addClient({ name: newClientName.trim(), phone: '', email: '', address: '', city: '', province: '', notes: '', seller: '' });
     setNewClientName('');
   }
 

@@ -29,6 +29,7 @@ export interface Client {
   city: string;
   province: string;
   notes: string;
+  seller: string;
   createdAt: string;
 }
 

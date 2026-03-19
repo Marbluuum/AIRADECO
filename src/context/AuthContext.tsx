@@ -13,6 +13,8 @@ const USERS: (UserProfile & { password: string })[] = [
   { id: '3', name: 'Taiel',   password: 'taiel123',   role: 'vendedor' },
 ];
 
+export const SELLERS: string[] = USERS.map(u => u.name);
+
 const SESSION_KEY = 'airadeco_user';
 
 // ─── Context ──────────────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 import { createContext, useContext, useReducer, useEffect, useState, type ReactNode } from 'react';
 import {
   collection, getDocs, addDoc, updateDoc, deleteDoc,
-  doc, query, orderBy, writeBatch,
+  doc, writeBatch,
 } from 'firebase/firestore';
 import { firestore } from '../lib/firebase';
 import type { AppStore, Client, Product, Order, ShippingZone, Expense } from '../types';
@@ -73,13 +73,18 @@ function reducer(state: AppStore, action: Action): AppStore {
 function col(name: string) { return collection(firestore, name); }
 function ref(colName: string, id: string) { return doc(firestore, colName, id); }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function loadCol<T>(colName: string, order: string): Promise<T[]> {
   try {
-    const snap = await getDocs(query(col(colName), orderBy(order, 'desc')));
-    return snap.docs.map(d => ({ id: d.id, ...d.data() } as T));
-  } catch {
     const snap = await getDocs(col(colName));
-    return snap.docs.map(d => ({ id: d.id, ...d.data() } as T));
+    const docs = snap.docs.map(d => ({ id: d.id, ...d.data() } as unknown as T));
+    return (docs as any[]).sort((a, b) => {
+      const av = String(a[order] ?? '');
+      const bv = String(b[order] ?? '');
+      return bv > av ? 1 : bv < av ? -1 : 0;
+    }) as T[];
+  } catch {
+    return [];
   }
 }
 
@@ -128,8 +133,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       let finalZones    = shippingZones;
       let finalProducts = products;
 
-      if (shippingZones.length === 0) finalZones    = await seedZones();
-      if (products.length === 0)      finalProducts = await seedProducts();
+      try {
+        if (shippingZones.length === 0) finalZones    = await seedZones();
+        if (products.length === 0)      finalProducts = await seedProducts();
+      } catch { /* si falla el seed, continúa con lo que haya */ }
 
       dispatch({ type: 'SET_ALL', payload: { clients, products: finalProducts, orders, shippingZones: finalZones, expenses } });
     } finally {

@@ -6,10 +6,11 @@ import ConfirmDialog from '../components/ui/ConfirmDialog';
 import EmptyState from '../components/ui/EmptyState';
 import type { Client } from '../types';
 import { formatDate } from '../utils/format';
-import { Users, Plus, Search, Download, Pencil, Trash2, Phone, MapPin, Mail, ChevronRight } from 'lucide-react';
+import { Users, Plus, Search, Download, Pencil, Trash2, Phone, MapPin, Mail, ChevronRight, UserCheck } from 'lucide-react';
+import { SELLERS } from '../context/AuthContext';
 
 const empty: Omit<Client, 'id' | 'createdAt'> = {
-  name: '', phone: '', email: '', address: '', city: '', province: '', notes: ''
+  name: '', phone: '', email: '', address: '', city: '', province: '', notes: '', seller: '',
 };
 
 export default function Clients() {
@@ -41,7 +42,7 @@ export default function Clients() {
 
   function openEdit(c: Client) {
     setEditing(c);
-    setForm({ name: c.name, phone: c.phone, email: c.email, address: c.address, city: c.city, province: c.province, notes: c.notes });
+    setForm({ name: c.name, phone: c.phone, email: c.email, address: c.address, city: c.city, province: c.province, notes: c.notes, seller: c.seller ?? '' });
     setDetailOpen(false);
     setModalOpen(true);
   }
@@ -151,6 +152,7 @@ export default function Clients() {
                     <p className="font-semibold text-dark-800 text-sm truncate">{c.name}</p>
                     <p className="text-xs text-gray-400 truncate">
                       {c.phone || c.email || `${c.city}${c.province ? `, ${c.province}` : ''}`}
+                      {c.seller ? ` · ${c.seller}` : ''}
                     </p>
                   </div>
                 </div>
@@ -195,6 +197,13 @@ export default function Clients() {
           <div>
             <label className="label">Notas</label>
             <textarea className="input resize-none" rows={3} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="Observaciones del cliente…" />
+          </div>
+          <div>
+            <label className="label">Vendedora asignada</label>
+            <select className="select" value={form.seller} onChange={e => setForm({ ...form, seller: e.target.value })}>
+              <option value="">— Sin asignar —</option>
+              {SELLERS.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
           </div>
           <button className="btn-primary w-full" onClick={handleSave} disabled={!form.name.trim() || saving}>
             {saving ? 'Guardando…' : editing ? 'Guardar cambios' : 'Agregar cliente'}
@@ -241,6 +250,15 @@ export default function Clients() {
                 <div className="p-3 bg-cream-50 rounded-xl">
                   <p className="text-xs text-gray-400 mb-1">Notas</p>
                   <p className="text-sm text-dark-700">{selected.notes}</p>
+                </div>
+              )}
+              {selected.seller && (
+                <div className="flex items-center gap-3 p-3 bg-cream-50 rounded-xl">
+                  <UserCheck size={16} className="text-gold-500" />
+                  <div>
+                    <p className="text-xs text-gray-400">Vendedora asignada</p>
+                    <p className="text-sm font-semibold text-dark-700">{selected.seller}</p>
+                  </div>
                 </div>
               )}
             </div>
