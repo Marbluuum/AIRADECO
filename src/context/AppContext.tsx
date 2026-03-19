@@ -1,81 +1,28 @@
 import { createContext, useContext, useReducer, useEffect, useState, type ReactNode } from 'react';
+import {
+  collection, getDocs, addDoc, updateDoc, deleteDoc,
+  doc, query, orderBy, setDoc, writeBatch,
+} from 'firebase/firestore';
+import { firestore } from '../lib/firebase';
 import type { AppStore, Client, Product, Order, ShippingZone, Expense } from '../types';
-import { supabase } from '../lib/supabase';
 
-// ─── Helpers: DB ↔ App field mapping ─────────────────────────────────────────
+// ─── Default data (inserted on first run) ────────────────────────────────────
 
-function dbToClient(r: Record<string, unknown>): Client {
-  return {
-    id: r.id as string,
-    name: r.name as string,
-    phone: (r.phone as string) ?? '',
-    email: (r.email as string) ?? '',
-    address: (r.address as string) ?? '',
-    city: (r.city as string) ?? '',
-    province: (r.province as string) ?? '',
-    notes: (r.notes as string) ?? '',
-    createdAt: r.created_at as string,
-  };
-}
+const DEFAULT_ZONES: Omit<ShippingZone, 'id'>[] = [
+  { name: 'Local (mismo barrio)', price: 0,    description: 'Entrega sin costo' },
+  { name: 'CABA / GBA Zona 1',   price: 2500,  description: 'Capital y zona norte/sur cercana' },
+  { name: 'GBA Zona 2',          price: 4500,  description: 'Gran Buenos Aires lejano' },
+  { name: 'Interior del país',   price: 8000,  description: 'Envío por transporte/flota' },
+];
 
-function dbToProduct(r: Record<string, unknown>): Product {
-  return {
-    id: r.id as string,
-    name: r.name as string,
-    category: (r.category as string) ?? '',
-    costPrice: Number(r.cost_price) ?? 0,
-    salePrice: Number(r.sale_price) ?? 0,
-    stock: Number(r.stock) ?? 0,
-    description: (r.description as string) ?? '',
-    updatedAt: r.updated_at as string,
-  };
-}
+const DEFAULT_PRODUCTS: Omit<Product, 'id' | 'updatedAt'>[] = [
+  { name: 'Sillón esquinero',      category: 'Sillones',  costPrice: 85000,  salePrice: 130000, stock: 3, description: '' },
+  { name: 'Mesa ratona vidrio',    category: 'Mesas',     costPrice: 42000,  salePrice: 68000,  stock: 5, description: '' },
+  { name: 'Cama sommier 2 plazas', category: 'Camas',     costPrice: 120000, salePrice: 185000, stock: 2, description: '' },
+  { name: 'Comedor 6 sillas',      category: 'Comedores', costPrice: 165000, salePrice: 250000, stock: 1, description: '' },
+];
 
-function dbToOrder(r: Record<string, unknown>): Order {
-  return {
-    id: r.id as string,
-    orderNumber: r.order_number as string,
-    clientId: (r.client_id as string) ?? '',
-    clientName: r.client_name as string,
-    seller: r.seller as string,
-    channel: r.channel as import('../types').SaleChannel,
-    items: (r.items as import('../types').OrderItem[]) ?? [],
-    shippingZoneId: (r.shipping_zone_id as string) ?? '',
-    shippingZoneName: (r.shipping_zone_name as string) ?? '',
-    shippingCost: Number(r.shipping_cost) ?? 0,
-    subtotal: Number(r.subtotal) ?? 0,
-    total: Number(r.total) ?? 0,
-    totalCost: Number(r.total_cost) ?? 0,
-    amountPaid: Number(r.amount_paid) ?? 0,
-    paymentStatus: r.payment_status as import('../types').PaymentStatus,
-    status: r.status as import('../types').OrderStatus,
-    notes: (r.notes as string) ?? '',
-    createdAt: r.created_at as string,
-    updatedAt: r.updated_at as string,
-  };
-}
-
-function dbToShippingZone(r: Record<string, unknown>): ShippingZone {
-  return {
-    id: r.id as string,
-    name: r.name as string,
-    price: Number(r.price) ?? 0,
-    description: (r.description as string) ?? '',
-  };
-}
-
-function dbToExpense(r: Record<string, unknown>): Expense {
-  return {
-    id: r.id as string,
-    description: r.description as string,
-    amount: Number(r.amount) ?? 0,
-    category: (r.category as string) ?? '',
-    date: r.date as string,
-    createdAt: r.created_at as string,
-  };
-}
-
-// ─── Local state actions (for optimistic updates) ─────────────────────────────
+// ─── Local reducer ────────────────────────────────────────────────────────────
 
 type Action =
   | { type: 'SET_ALL'; payload: AppStore }
@@ -100,50 +47,63 @@ const EMPTY: AppStore = { clients: [], products: [], orders: [], shippingZones: 
 
 function reducer(state: AppStore, action: Action): AppStore {
   switch (action.type) {
-    case 'SET_ALL':      return action.payload;
-    case 'ADD_CLIENT':   return { ...state, clients: [action.payload, ...state.clients] };
-    case 'UPDATE_CLIENT':return { ...state, clients: state.clients.map(c => c.id === action.payload.id ? action.payload : c) };
-    case 'DELETE_CLIENT':return { ...state, clients: state.clients.filter(c => c.id !== action.payload) };
-    case 'ADD_PRODUCT':  return { ...state, products: [...state.products, action.payload] };
-    case 'UPDATE_PRODUCT':return { ...state, products: state.products.map(p => p.id === action.payload.id ? action.payload : p) };
-    case 'DELETE_PRODUCT':return { ...state, products: state.products.filter(p => p.id !== action.payload) };
-    case 'SET_PRODUCTS': return { ...state, products: action.payload };
-    case 'ADD_ORDER':    return { ...state, orders: [action.payload, ...state.orders] };
-    case 'UPDATE_ORDER': return { ...state, orders: state.orders.map(o => o.id === action.payload.id ? action.payload : o) };
-    case 'DELETE_ORDER': return { ...state, orders: state.orders.filter(o => o.id !== action.payload) };
-    case 'ADD_SHIPPING_ZONE':    return { ...state, shippingZones: [...state.shippingZones, action.payload] };
+    case 'SET_ALL':           return action.payload;
+    case 'ADD_CLIENT':        return { ...state, clients: [action.payload, ...state.clients] };
+    case 'UPDATE_CLIENT':     return { ...state, clients: state.clients.map(c => c.id === action.payload.id ? action.payload : c) };
+    case 'DELETE_CLIENT':     return { ...state, clients: state.clients.filter(c => c.id !== action.payload) };
+    case 'ADD_PRODUCT':       return { ...state, products: [...state.products, action.payload] };
+    case 'UPDATE_PRODUCT':    return { ...state, products: state.products.map(p => p.id === action.payload.id ? action.payload : p) };
+    case 'DELETE_PRODUCT':    return { ...state, products: state.products.filter(p => p.id !== action.payload) };
+    case 'SET_PRODUCTS':      return { ...state, products: action.payload };
+    case 'ADD_ORDER':         return { ...state, orders: [action.payload, ...state.orders] };
+    case 'UPDATE_ORDER':      return { ...state, orders: state.orders.map(o => o.id === action.payload.id ? action.payload : o) };
+    case 'DELETE_ORDER':      return { ...state, orders: state.orders.filter(o => o.id !== action.payload) };
+    case 'ADD_SHIPPING_ZONE': return { ...state, shippingZones: [...state.shippingZones, action.payload] };
     case 'UPDATE_SHIPPING_ZONE': return { ...state, shippingZones: state.shippingZones.map(z => z.id === action.payload.id ? action.payload : z) };
     case 'DELETE_SHIPPING_ZONE': return { ...state, shippingZones: state.shippingZones.filter(z => z.id !== action.payload) };
-    case 'ADD_EXPENSE':   return { ...state, expenses: [...state.expenses, action.payload] };
-    case 'UPDATE_EXPENSE':return { ...state, expenses: state.expenses.map(e => e.id === action.payload.id ? action.payload : e) };
-    case 'DELETE_EXPENSE':return { ...state, expenses: state.expenses.filter(e => e.id !== action.payload) };
-    default:             return state;
+    case 'ADD_EXPENSE':       return { ...state, expenses: [...state.expenses, action.payload] };
+    case 'UPDATE_EXPENSE':    return { ...state, expenses: state.expenses.map(e => e.id === action.payload.id ? action.payload : e) };
+    case 'DELETE_EXPENSE':    return { ...state, expenses: state.expenses.filter(e => e.id !== action.payload) };
+    default:                  return state;
   }
 }
 
-// ─── DB Actions ───────────────────────────────────────────────────────────────
+// ─── Firestore helpers ────────────────────────────────────────────────────────
+
+function col(name: string) { return collection(firestore, name); }
+function d(colName: string, id: string) { return doc(firestore, colName, id); }
+
+async function loadCollection<T>(colName: string, orderField = 'createdAt'): Promise<T[]> {
+  try {
+    const q    = query(col(colName), orderBy(orderField, 'desc'));
+    const snap = await getDocs(q);
+    return snap.docs.map(d => ({ id: d.id, ...d.data() } as T));
+  } catch {
+    // Si no hay documentos con ese campo, cargar sin ordenar
+    const snap = await getDocs(col(colName));
+    return snap.docs.map(d => ({ id: d.id, ...d.data() } as T));
+  }
+}
+
+// ─── DB Actions interface ─────────────────────────────────────────────────────
 
 export interface AppActions {
-  addClient:    (data: Omit<Client, 'id' | 'createdAt'>) => Promise<void>;
-  updateClient: (client: Client) => Promise<void>;
-  deleteClient: (id: string) => Promise<void>;
-
-  addProduct:    (data: Omit<Product, 'id' | 'updatedAt'>) => Promise<void>;
-  updateProduct: (product: Product) => Promise<void>;
-  deleteProduct: (id: string) => Promise<void>;
-  importProducts:(products: Omit<Product, 'id' | 'updatedAt'>[]) => Promise<void>;
-
-  addOrder:    (data: Omit<Order, 'id' | 'orderNumber' | 'createdAt' | 'updatedAt'>) => Promise<void>;
-  updateOrder: (order: Order) => Promise<void>;
-  deleteOrder: (id: string) => Promise<void>;
-
-  addShippingZone:    (data: Omit<ShippingZone, 'id'>) => Promise<void>;
-  updateShippingZone: (zone: ShippingZone) => Promise<void>;
-  deleteShippingZone: (id: string) => Promise<void>;
-
-  addExpense:    (data: Omit<Expense, 'id' | 'createdAt'>) => Promise<void>;
-  updateExpense: (expense: Expense) => Promise<void>;
-  deleteExpense: (id: string) => Promise<void>;
+  addClient:         (data: Omit<Client, 'id' | 'createdAt'>) => Promise<void>;
+  updateClient:      (client: Client) => Promise<void>;
+  deleteClient:      (id: string) => Promise<void>;
+  addProduct:        (data: Omit<Product, 'id' | 'updatedAt'>) => Promise<void>;
+  updateProduct:     (product: Product) => Promise<void>;
+  deleteProduct:     (id: string) => Promise<void>;
+  importProducts:    (products: Omit<Product, 'id' | 'updatedAt'>[]) => Promise<void>;
+  addOrder:          (data: Omit<Order, 'id' | 'orderNumber' | 'createdAt' | 'updatedAt'>) => Promise<void>;
+  updateOrder:       (order: Order) => Promise<void>;
+  deleteOrder:       (id: string) => Promise<void>;
+  addShippingZone:   (data: Omit<ShippingZone, 'id'>) => Promise<void>;
+  updateShippingZone:(zone: ShippingZone) => Promise<void>;
+  deleteShippingZone:(id: string) => Promise<void>;
+  addExpense:        (data: Omit<Expense, 'id' | 'createdAt'>) => Promise<void>;
+  updateExpense:     (expense: Expense) => Promise<void>;
+  deleteExpense:     (id: string) => Promise<void>;
 }
 
 // ─── Context ──────────────────────────────────────────────────────────────────
@@ -160,26 +120,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, EMPTY);
   const [loading, setLoading] = useState(true);
 
-  // ── Load all data from Supabase on mount ──────────────────────────────────
+  // ── Load data on mount ───────────────────────────────────────────────────
   useEffect(() => {
     async function loadAll() {
       try {
-        const [clients, products, orders, zones, expenses] = await Promise.all([
-          supabase.from('clients').select('*').order('created_at', { ascending: false }),
-          supabase.from('products').select('*').order('name'),
-          supabase.from('orders').select('*').order('created_at', { ascending: false }),
-          supabase.from('shipping_zones').select('*').order('price'),
-          supabase.from('expenses').select('*').order('date', { ascending: false }),
+        const [clients, products, orders, shippingZones, expenses] = await Promise.all([
+          loadCollection<Client>('clients', 'createdAt'),
+          loadCollection<Product>('products', 'updatedAt'),
+          loadCollection<Order>('orders', 'createdAt'),
+          loadCollection<ShippingZone>('shippingZones', 'name'),
+          loadCollection<Expense>('expenses', 'date'),
         ]);
+
+        // Insertar datos por defecto si es la primera vez
+        let finalZones = shippingZones;
+        let finalProducts = products;
+
+        if (shippingZones.length === 0) {
+          finalZones = await insertDefaultZones();
+        }
+        if (products.length === 0) {
+          finalProducts = await insertDefaultProducts();
+        }
+
         dispatch({
           type: 'SET_ALL',
-          payload: {
-            clients:       (clients.data  ?? []).map(r => dbToClient(r as Record<string, unknown>)),
-            products:      (products.data ?? []).map(r => dbToProduct(r as Record<string, unknown>)),
-            orders:        (orders.data   ?? []).map(r => dbToOrder(r as Record<string, unknown>)),
-            shippingZones: (zones.data    ?? []).map(r => dbToShippingZone(r as Record<string, unknown>)),
-            expenses:      (expenses.data ?? []).map(r => dbToExpense(r as Record<string, unknown>)),
-          },
+          payload: { clients, products: finalProducts, orders, shippingZones: finalZones, expenses },
         });
       } finally {
         setLoading(false);
@@ -188,180 +154,131 @@ export function AppProvider({ children }: { children: ReactNode }) {
     loadAll();
   }, []);
 
-  // ── Helper: next order number ────────────────────────────────────────────
-  async function nextOrderNumber(): Promise<string> {
-    const { data } = await supabase
-      .from('orders')
-      .select('order_number')
-      .order('created_at', { ascending: false })
-      .limit(1);
-    const last = data?.[0]?.order_number as string | undefined;
-    const n = last ? (parseInt(last.replace('AD-', '')) + 1) : (state.orders.length + 1);
+  async function insertDefaultZones(): Promise<ShippingZone[]> {
+    const zones: ShippingZone[] = [];
+    for (const z of DEFAULT_ZONES) {
+      const ref = await addDoc(col('shippingZones'), z);
+      zones.push({ id: ref.id, ...z });
+    }
+    return zones;
+  }
+
+  async function insertDefaultProducts(): Promise<Product[]> {
+    const now = new Date().toISOString();
+    const prods: Product[] = [];
+    for (const p of DEFAULT_PRODUCTS) {
+      const data = { ...p, updatedAt: now };
+      const ref  = await addDoc(col('products'), data);
+      prods.push({ id: ref.id, ...data });
+    }
+    return prods;
+  }
+
+  // ── Next order number ────────────────────────────────────────────────────
+  function nextOrderNumber(currentOrders: Order[]): string {
+    const n = currentOrders.length + 1;
     return `AD-${String(n).padStart(4, '0')}`;
   }
 
   // ── DB Actions ────────────────────────────────────────────────────────────
   const db: AppActions = {
-    // Clients
+    // ── Clients
     async addClient(data) {
-      const { data: row, error } = await supabase.from('clients').insert({
-        name: data.name, phone: data.phone, email: data.email,
-        address: data.address, city: data.city, province: data.province, notes: data.notes,
-      }).select().single();
-      if (error) throw error;
-      dispatch({ type: 'ADD_CLIENT', payload: dbToClient(row as Record<string, unknown>) });
+      const now = new Date().toISOString();
+      const ref = await addDoc(col('clients'), { ...data, createdAt: now });
+      dispatch({ type: 'ADD_CLIENT', payload: { id: ref.id, ...data, createdAt: now } });
     },
     async updateClient(client) {
-      const { error } = await supabase.from('clients').update({
-        name: client.name, phone: client.phone, email: client.email,
-        address: client.address, city: client.city, province: client.province, notes: client.notes,
-      }).eq('id', client.id);
-      if (error) throw error;
+      const { id, ...data } = client;
+      await updateDoc(d('clients', id), data);
       dispatch({ type: 'UPDATE_CLIENT', payload: client });
     },
     async deleteClient(id) {
-      const { error } = await supabase.from('clients').delete().eq('id', id);
-      if (error) throw error;
+      await deleteDoc(d('clients', id));
       dispatch({ type: 'DELETE_CLIENT', payload: id });
     },
 
-    // Products
+    // ── Products
     async addProduct(data) {
-      const { data: row, error } = await supabase.from('products').insert({
-        name: data.name, category: data.category,
-        cost_price: data.costPrice, sale_price: data.salePrice,
-        stock: data.stock, description: data.description,
-      }).select().single();
-      if (error) throw error;
-      dispatch({ type: 'ADD_PRODUCT', payload: dbToProduct(row as Record<string, unknown>) });
+      const now  = new Date().toISOString();
+      const full = { ...data, updatedAt: now };
+      const ref  = await addDoc(col('products'), full);
+      dispatch({ type: 'ADD_PRODUCT', payload: { id: ref.id, ...full } });
     },
     async updateProduct(product) {
       const now = new Date().toISOString();
-      const { error } = await supabase.from('products').update({
-        name: product.name, category: product.category,
-        cost_price: product.costPrice, sale_price: product.salePrice,
-        stock: product.stock, description: product.description,
-        updated_at: now,
-      }).eq('id', product.id);
-      if (error) throw error;
-      dispatch({ type: 'UPDATE_PRODUCT', payload: { ...product, updatedAt: now } });
+      const { id, ...data } = { ...product, updatedAt: now };
+      await updateDoc(d('products', id), data);
+      dispatch({ type: 'UPDATE_PRODUCT', payload: { id, ...data } });
     },
     async deleteProduct(id) {
-      const { error } = await supabase.from('products').delete().eq('id', id);
-      if (error) throw error;
+      await deleteDoc(d('products', id));
       dispatch({ type: 'DELETE_PRODUCT', payload: id });
     },
     async importProducts(products) {
-      // Delete all and re-insert
-      await supabase.from('products').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-      if (products.length === 0) { dispatch({ type: 'SET_PRODUCTS', payload: [] }); return; }
-      const rows = products.map(p => ({
-        name: p.name, category: p.category,
-        cost_price: p.costPrice, sale_price: p.salePrice,
-        stock: p.stock, description: p.description,
-      }));
-      const { data, error } = await supabase.from('products').insert(rows).select();
-      if (error) throw error;
-      dispatch({ type: 'SET_PRODUCTS', payload: (data ?? []).map(r => dbToProduct(r as Record<string, unknown>)) });
+      // Borrar todos y reinsertar
+      const snap = await getDocs(col('products'));
+      const batch = writeBatch(firestore);
+      snap.docs.forEach(d => batch.delete(d.ref));
+      await batch.commit();
+
+      const now  = new Date().toISOString();
+      const inserted: Product[] = [];
+      for (const p of products) {
+        const full = { ...p, updatedAt: now };
+        const ref  = await addDoc(col('products'), full);
+        inserted.push({ id: ref.id, ...full });
+      }
+      dispatch({ type: 'SET_PRODUCTS', payload: inserted });
     },
 
-    // Orders
+    // ── Orders
     async addOrder(data) {
-      const orderNumber = await nextOrderNumber();
-      const now = new Date().toISOString();
-      const { data: row, error } = await supabase.from('orders').insert({
-        order_number: orderNumber,
-        client_id: data.clientId,
-        client_name: data.clientName,
-        seller: data.seller,
-        channel: data.channel,
-        items: data.items,
-        shipping_zone_id: data.shippingZoneId,
-        shipping_zone_name: data.shippingZoneName,
-        shipping_cost: data.shippingCost,
-        subtotal: data.subtotal,
-        total: data.total,
-        total_cost: data.totalCost,
-        amount_paid: data.amountPaid,
-        payment_status: data.paymentStatus,
-        status: data.status,
-        notes: data.notes,
-        created_at: now,
-        updated_at: now,
-      }).select().single();
-      if (error) throw error;
-      dispatch({ type: 'ADD_ORDER', payload: dbToOrder(row as Record<string, unknown>) });
+      const now         = new Date().toISOString();
+      const orderNumber = nextOrderNumber(state.orders);
+      const full        = { ...data, orderNumber, createdAt: now, updatedAt: now };
+      const ref         = await addDoc(col('orders'), full);
+      dispatch({ type: 'ADD_ORDER', payload: { id: ref.id, ...full } });
     },
     async updateOrder(order) {
       const now = new Date().toISOString();
-      const { error } = await supabase.from('orders').update({
-        client_id: order.clientId,
-        client_name: order.clientName,
-        seller: order.seller,
-        channel: order.channel,
-        items: order.items,
-        shipping_zone_id: order.shippingZoneId,
-        shipping_zone_name: order.shippingZoneName,
-        shipping_cost: order.shippingCost,
-        subtotal: order.subtotal,
-        total: order.total,
-        total_cost: order.totalCost,
-        amount_paid: order.amountPaid,
-        payment_status: order.paymentStatus,
-        status: order.status,
-        notes: order.notes,
-        updated_at: now,
-      }).eq('id', order.id);
-      if (error) throw error;
-      dispatch({ type: 'UPDATE_ORDER', payload: { ...order, updatedAt: now } });
+      const { id, ...data } = { ...order, updatedAt: now };
+      await updateDoc(d('orders', id), data);
+      dispatch({ type: 'UPDATE_ORDER', payload: { id, ...data } });
     },
     async deleteOrder(id) {
-      const { error } = await supabase.from('orders').delete().eq('id', id);
-      if (error) throw error;
+      await deleteDoc(d('orders', id));
       dispatch({ type: 'DELETE_ORDER', payload: id });
     },
 
-    // Shipping zones
+    // ── Shipping zones
     async addShippingZone(data) {
-      const { data: row, error } = await supabase.from('shipping_zones').insert({
-        name: data.name, price: data.price, description: data.description,
-      }).select().single();
-      if (error) throw error;
-      dispatch({ type: 'ADD_SHIPPING_ZONE', payload: dbToShippingZone(row as Record<string, unknown>) });
+      const ref = await addDoc(col('shippingZones'), data);
+      dispatch({ type: 'ADD_SHIPPING_ZONE', payload: { id: ref.id, ...data } });
     },
     async updateShippingZone(zone) {
-      const { error } = await supabase.from('shipping_zones').update({
-        name: zone.name, price: zone.price, description: zone.description,
-      }).eq('id', zone.id);
-      if (error) throw error;
+      const { id, ...data } = zone;
+      await updateDoc(d('shippingZones', id), data);
       dispatch({ type: 'UPDATE_SHIPPING_ZONE', payload: zone });
     },
     async deleteShippingZone(id) {
-      const { error } = await supabase.from('shipping_zones').delete().eq('id', id);
-      if (error) throw error;
+      await deleteDoc(d('shippingZones', id));
       dispatch({ type: 'DELETE_SHIPPING_ZONE', payload: id });
     },
 
-    // Expenses
+    // ── Expenses
     async addExpense(data) {
-      const { data: row, error } = await supabase.from('expenses').insert({
-        description: data.description, amount: data.amount,
-        category: data.category, date: data.date,
-      }).select().single();
-      if (error) throw error;
-      dispatch({ type: 'ADD_EXPENSE', payload: dbToExpense(row as Record<string, unknown>) });
+      const now = new Date().toISOString();
+      const ref = await addDoc(col('expenses'), { ...data, createdAt: now });
+      dispatch({ type: 'ADD_EXPENSE', payload: { id: ref.id, ...data, createdAt: now } });
     },
     async updateExpense(expense) {
-      const { error } = await supabase.from('expenses').update({
-        description: expense.description, amount: expense.amount,
-        category: expense.category, date: expense.date,
-      }).eq('id', expense.id);
-      if (error) throw error;
+      const { id, ...data } = expense;
+      await updateDoc(d('expenses', id), data);
       dispatch({ type: 'UPDATE_EXPENSE', payload: expense });
     },
     async deleteExpense(id) {
-      const { error } = await supabase.from('expenses').delete().eq('id', id);
-      if (error) throw error;
+      await deleteDoc(d('expenses', id));
       dispatch({ type: 'DELETE_EXPENSE', payload: id });
     },
   };
